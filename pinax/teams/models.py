@@ -8,6 +8,7 @@ from django.db import models
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from django.utils.text import slugify as django_slugify
 
 from pinax.invitations.models import JoinInvitation
 from reversion import revisions as reversion
@@ -24,7 +25,7 @@ def avatar_upload(instance, filename):
 
 
 def create_slug(name):
-    return slugify(name)[:50]
+    return django_slugify(name)[:50]
 
 
 class BaseTeam(models.Model):
@@ -271,78 +272,63 @@ class BaseMembership(models.Model):
         return self.role == BaseMembership.ROLE_MEMBER
 
     def promote(self, by):
-        role = self.team.role_for(by)
-        if role in [BaseMembership.ROLE_MANAGER, BaseMembership.ROLE_OWNER]:
-            if self.role == Membership.ROLE_MEMBER:
-                self.role = Membership.ROLE_MANAGER
-                self.save()
-                signals.promoted_member.send(sender=self, membership=self, by=by)
-                return True
+        if self.role == BaseMembership.ROLE_MEMBER:
+            self.role = BaseMembership.ROLE_MANAGER
+            self.save()
+            signals.promoted_member.send(sender=self.team, membership=self, by=by)
+            return True
         return False
 
     def demote(self, by):
-        role = self.team.role_for(by)
-        if role in [Membership.ROLE_MANAGER, Membership.ROLE_OWNER]:
-            if self.role == Membership.ROLE_MANAGER:
-                self.role = Membership.ROLE_MEMBER
-                self.save()
-                signals.demoted_member.send(sender=self, membership=self, by=by)
-                return True
+        if self.role == BaseMembership.ROLE_MANAGER:
+            self.role = BaseMembership.ROLE_MEMBER
+            self.save()
+            signals.demoted_member.send(sender=self.team, membership=self, by=by)
+            return True
         return False
 
     def accept(self, by):
-        role = self.team.role_for(by)
-        if role in [Membership.ROLE_MANAGER, Membership.ROLE_OWNER]:
-            if self.state == Membership.STATE_APPLIED:
-                self.state = Membership.STATE_ACCEPTED
-                self.save()
-                signals.accepted_membership.send(sender=self, membership=self)
-                return True
+        if self.state == BaseMembership.STATE_APPLIED:
+            self.state = BaseMembership.STATE_ACCEPTED
+            self.save()
+            signals.accepted_membership.send(sender=self.team, membership=self, by=by)
+            return True
         return False
 
     def reject(self, by):
-        role = self.team.role_for(by)
-        if role in [Membership.ROLE_MANAGER, Membership.ROLE_OWNER]:
-            if self.state == Membership.STATE_APPLIED:
-                self.state = Membership.STATE_REJECTED
-                self.save()
-                signals.rejected_membership.send(sender=self, membership=self)
-                return True
+        if self.state == BaseMembership.STATE_APPLIED:
+            self.state = BaseMembership.STATE_REJECTED
+            self.save()
+            signals.rejected_membership.send(sender=self.team, membership=self, by=by)
+            return True
         return False
 
     def joined(self):
-        self.user = self.invite.to_user
-        if self.team.manager_access == Team.MANAGER_ACCESS_ADD:
-            self.state = Membership.STATE_AUTO_JOINED
-        else:
-            self.state = Membership.STATE_INVITED
-        self.save()
+        if self.state == BaseMembership.STATE_INVITED:
+            self.state = BaseMembership.STATE_ACCEPTED
+            self.save()
+            signals.joined_team.send(sender=self.team, membership=self)
+            return True
+        return False
 
     def status(self):
-        if self.user:
-            return self.get_state_display()
-        if self.invite:
-            return self.invite.get_status_display()
-        return "Unknown"
+        return dict(BaseMembership.STATE_CHOICES)[self.state]
 
     def resend_invite(self, by=None):
-        if self.invite is not None:
-            code = self.invite.signup_code
-            code.expiry = timezone.now() + datetime.timedelta(days=5)
-            code.save()
-            code.send()
-            signals.resent_invite.send(sender=self, membership=self, by=by)
+        if self.state == BaseMembership.STATE_INVITED and self.invite:
+            self.invite.send_invite()
+            signals.resent_invite.send(sender=self.team, membership=self, by=by)
+            return True
+        return False
 
     def remove(self, by=None):
-        if self.invite is not None:
-            self.invite.signup_code.delete()
-            self.invite.delete()
+        signals.removed_member.send(sender=self.team, membership=self, by=by)
         self.delete()
-        signals.removed_membership.send(sender=Membership, team=self.team, user=self.user, invitee=self.invitee, by=by)
 
     @property
     def invitee(self):
-        return self.user or self.invite.to_user_email()
+        if self.invite:
+            return self.invite.to_user
 
 
 class SimpleMembership(BaseMembership):
@@ -352,7 +338,7 @@ class SimpleMembership(BaseMembership):
     invite = models.ForeignKey(JoinInvitation, related_name="simple_memberships", null=True, blank=True, verbose_name=_("invite"), on_delete=models.SET_NULL)
 
     def __str__(self):
-        return f"{self.user} in {self.team}"
+        return f"{self.team}: {self.user}"
 
     class Meta:
         unique_together = [("team", "user", "invite")]
@@ -367,7 +353,7 @@ class Membership(BaseMembership):
     invite = models.ForeignKey(JoinInvitation, related_name="memberships", null=True, blank=True, verbose_name=_("invite"), on_delete=models.SET_NULL)
 
     def __str__(self):
-        return f"{self.user} in {self.team}"
+        return f"{self.team}: {self.user}"
 
     class Meta:
         unique_together = [("team", "user", "invite")]

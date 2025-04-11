@@ -39,13 +39,17 @@ Pinax Teams
 Supported Django and Python Versions
 ------------------------------------
 
-+-----------------+-----+-----+-----+-----+
-| Django / Python | 3.7 | 3.8 | 3.9 | 3.10|
-+=================+=====+=====+=====+=====+
-|  3.2            |  *  |  *  |  *  |  *  |
-+-----------------+-----+-----+-----+-----+
-|  4.1            |  -  |  -  |  -  |  *  |
-+-----------------+-----+-----+-----+-----+
++-----------------+-----+-----+-----+-----+-----+-----+
+| Django / Python | 3.7 | 3.8 | 3.9 | 3.10| 3.11| 3.12|
++=================+=====+=====+=====+=====+=====+=====+
+|  3.2            |  *  |  *  |  *  |  *  |  -  |  -  |
++-----------------+-----+-----+-----+-----+-----+-----+
+|  4.1            |  -  |  -  |  -  |  *  |  *  |  *  |
++-----------------+-----+-----+-----+-----+-----+-----+
+|  4.2            |  -  |  -  |  -  |  *  |  *  |  *  |
++-----------------+-----+-----+-----+-----+-----+-----+
+|  5.0            |  -  |  -  |  -  |  *  |  *  |  *  |
++-----------------+-----+-----+-----+-----+-----+-----+
 """
 
 setup(
@@ -65,8 +69,10 @@ setup(
         "Development Status :: 5 - Production/Stable",
         "Environment :: Web Environment",
         "Framework :: Django",
-        "Framework :: Django :: 3.0",
-        "Framework :: Django :: 4.0",
+        "Framework :: Django :: 3.2",
+        "Framework :: Django :: 4.1",
+        "Framework :: Django :: 4.2",
+        "Framework :: Django :: 5.0",
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
@@ -75,10 +81,12 @@ setup(
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
         "Topic :: Software Development :: Libraries :: Python Modules",
     ],
     install_requires=[
-        "django>=3.2",
+        "django>=3.2,<5.1",
         "django-reversion>=5.0.4",
         "pinax-invitations>=8.0.0",
         "python-slugify>=7.0.0",

@@ -15,6 +15,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.http import require_POST
 from django.views.generic import FormView, ListView, TemplateView
 from django.views.generic.edit import CreateView
+from django.views.generic.detail import DetailView
 
 from account.decorators import login_required
 from account.mixins import LoginRequiredMixin
@@ -65,6 +66,26 @@ class TeamListView(ListView):
     template_name = "pinax/teams/team_list.html"
 
 
+class TeamDetailView(DetailView):
+    model = Team
+    template_name = "pinax/teams/team_detail.html"
+    context_object_name = "team"
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        team = self.object
+        user = self.request.user
+        context.update({
+            "state": team.state_for(user),
+            "role": team.role_for(user),
+            "invite_form": TeamInviteUserForm(team=team),
+            "can_join": team.can_join(user),
+            "can_leave": team.can_leave(user),
+            "can_apply": team.can_apply(user),
+        })
+        return context
+
+
 @team_required
 @login_required
 def team_update(request):
@@ -79,25 +100,6 @@ def team_update(request):
     else:
         form = TeamForm(instance=team)
     return render(request, "pinax/teams/team_form.html", {"form": form, "team": team})
-
-
-@team_required
-@login_required
-def team_detail(request):
-    team = request.team
-    state = team.state_for(request.user)
-    role = team.role_for(request.user)
-    if team.member_access == Team.MEMBER_ACCESS_INVITATION and state is None:
-        raise Http404()
-    return render(request, "pinax/teams/team_detail.html", {
-        "team": team,
-        "state": state,
-        "role": role,
-        "invite_form": TeamInviteUserForm(team=team),
-        "can_join": team.can_join(request.user),
-        "can_leave": team.can_leave(request.user),
-        "can_apply": team.can_apply(request.user),
-    })
 
 
 class TeamManageView(TemplateView):
@@ -248,52 +250,36 @@ class TeamInviteView(FormView):
         }
 
         membership = self.membership
-        if membership is not None:
-            if membership.state == Membership.STATE_APPLIED:
-                fragment_class = ".applicants"
-            elif membership.state == Membership.STATE_INVITED:
-                fragment_class = ".invitees"
-            elif membership.state in (Membership.STATE_AUTO_JOINED, Membership.STATE_ACCEPTED):
-                fragment_class = {
-                    Membership.ROLE_OWNER: ".owners",
-                    Membership.ROLE_MANAGER: ".managers",
-                    Membership.ROLE_MEMBER: ".members"
-                }[membership.role]
-            data.update({
-                "append-fragments": {
-                    fragment_class: render_to_string(
-                        "pinax/teams/_membership.html",
-                        {
-                            "membership": membership,
-                            "team": self.team
-                        },
-                        request=self.request
-                    )
-                }
-            })
+        if membership:
+            data["membership"] = {
+                "id": membership.id,
+                "state": membership.state,
+                "role": membership.role,
+                "user": membership.user.username if membership.user else None,
+                "invite": membership.invite.to_email if membership.invite else None
+            }
         return data
 
     def form_valid(self, form):
-        user_or_email = form.cleaned_data["invitee"]
-        role = form.cleaned_data["role"]
-        if isinstance(user_or_email, str):
-            self.membership = self.team.invite_user(self.request.user, user_or_email, role)
-        else:
-            self.membership = self.team.add_user(user_or_email, role, by=self.request.user)
-
+        self.membership = self.team.invite_user(
+            self.request.user,
+            form.cleaned_data["email_address"],
+            form.cleaned_data["role"]
+        )
         self.after_membership_added(form)
-
-        data = self.get_form_success_data(form)
-        return self.render_to_response(data)
+        return self.render_to_response(self.get_form_success_data(form))
 
     def form_invalid(self, form):
-        data = {
-            "html": render_to_string("pinax/teams/_invite_form.html", {
-                "invite_form": form,
-                "team": self.team
-            }, request=self.request)
-        }
-        return self.render_to_response(data)
+        return JsonResponse({
+            "html": render_to_string(
+                "pinax/teams/_invite_form.html",
+                {
+                    "invite_form": form,
+                    "team": self.team
+                },
+                request=self.request
+            )
+        }, status=400)
 
     def render_to_response(self, context, **response_kwargs):
         return JsonResponse(context)
@@ -302,95 +288,58 @@ class TeamInviteView(FormView):
 @manager_required
 @require_POST
 def team_member_revoke_invite(request, pk):
-    membership = get_object_or_404(request.team.memberships.all(), pk=pk)
+    membership = get_object_or_404(Membership, pk=pk)
     membership.remove(by=request.user)
-    data = {
-        "html": ""
-    }
-    return HttpResponse(json.dumps(data), content_type="application/json")
+    messages.success(request, MESSAGE_STRINGS["revoked-invite"])
+    return redirect(membership.team.get_absolute_url())
 
 
 @manager_required
 @require_POST
 def team_member_resend_invite(request, pk):
-    membership = get_object_or_404(request.team.memberships.all(), pk=pk)
-    membership.resend_invite(by=request.user)
-    data = {
-        "html": render_to_string(
-            "pinax/teams/_membership.html",
-            {
-                "membership": membership,
-                "team": request.team
-            },
-            request=request
-        )
-    }
-    return HttpResponse(json.dumps(data), content_type="application/json")
+    membership = get_object_or_404(Membership, pk=pk)
+    if membership.resend_invite(by=request.user):
+        messages.success(request, MESSAGE_STRINGS["resent-invite"])
+    return redirect(membership.team.get_absolute_url())
 
 
 @manager_required
 @require_POST
 def team_member_promote(request, pk):
-    membership = get_object_or_404(request.team.memberships.all(), pk=pk)
-    membership.promote(by=request.user)
-    data = {
-        "html": render_to_string(
-            "pinax/teams/_membership.html",
-            {
-                "membership": membership,
-                "team": request.team
-            },
-            request=request
-        )
-    }
-    return HttpResponse(json.dumps(data), content_type="application/json")
+    membership = get_object_or_404(Membership, pk=pk)
+    if membership.promote(by=request.user):
+        messages.success(request, MESSAGE_STRINGS["promoted-member"])
+    return redirect(membership.team.get_absolute_url())
 
 
 @manager_required
 @require_POST
 def team_member_demote(request, pk):
-    membership = get_object_or_404(request.team.memberships.all(), pk=pk)
-    membership.demote(by=request.user)
-    data = {
-        "html": render_to_string(
-            "pinax/teams/_membership.html",
-            {
-                "membership": membership,
-                "team": request.team
-            },
-            request=request
-        )
-    }
-    return HttpResponse(json.dumps(data), content_type="application/json")
+    membership = get_object_or_404(Membership, pk=pk)
+    if membership.demote(by=request.user):
+        messages.success(request, MESSAGE_STRINGS["demoted-member"])
+    return redirect(membership.team.get_absolute_url())
 
 
 @manager_required
 @require_POST
 def team_member_remove(request, pk):
-    membership = get_object_or_404(request.team.memberships.all(), pk=pk)
+    membership = get_object_or_404(Membership, pk=pk)
     membership.remove(by=request.user)
-    data = {
-        "html": ""
-    }
-    return HttpResponse(json.dumps(data), content_type="application/json")
+    messages.success(request, MESSAGE_STRINGS["removed-member"])
+    return redirect(membership.team.get_absolute_url())
 
 
 @team_required
 @login_required
 def autocomplete_users(request):
-    team = request.team
-    role = team.role_for(request.user)
-    if role not in [Membership.ROLE_MANAGER, Membership.ROLE_OWNER]:
-        raise Http404()
-    User = get_user_model()
-    users = User.objects.exclude(pk__in=[
-        x.user.pk for x in team.memberships.exclude(user__isnull=True)
-    ])
-    q = request.GET.get("query")
-    results = []
-    if q:
-        results.extend([
-            hookset.get_autocomplete_result(x)
-            for x in hookset.search_queryset(q, users)
-        ])
-    return HttpResponse(json.dumps(results), content_type="application/json")
+    if "q" in request.GET:
+        users = get_user_model().objects.filter(
+            username__icontains=request.GET["q"]
+        ).exclude(
+            username=request.user.username
+        )
+        return JsonResponse({
+            "users": [{"username": u.username} for u in users]
+        })
+    return JsonResponse({"users": []})
